@@ -4,16 +4,53 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-const server = http.createServer((req, res) => {
+function fetchUrl(url, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    const req = lib.get(url, { timeout }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+  });
+}
+
+function postJson(url, payload) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const opts = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+        'x-api-key': ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01'
+      }
+    };
+    const req = https.request(url, opts, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  // Serve o app HTML na raiz
-  if (req.url === '/' || req.url === '/index.html') {
+  // Serve index.html
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     const filePath = path.join(__dirname, 'index.html');
     fs.readFile(filePath, (err, data) => {
       if (err) { res.writeHead(404); res.end('Not found'); return; }
@@ -23,59 +60,85 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.url === '/health') {
+  // Health check
+  if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
     return;
   }
 
-  if (!req.url.startsWith('/proxy?url=')) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Use /proxy?url=SEU_LINK_AQUI' }));
-    return;
-  }
+  // Proxy de imagem: GET /proxy?url=...
+  if (req.method === 'GET' && req.url.startsWith('/proxy?url=')) {
+    const rawUrl = req.url.slice('/proxy?url='.length);
+    let targetUrl;
+    try { targetUrl = decodeURIComponent(rawUrl); new URL(targetUrl); }
+    catch { res.writeHead(400); res.end(JSON.stringify({ error: 'URL inválida' })); return; }
 
-  const rawUrl = req.url.slice('/proxy?url='.length);
-  let targetUrl;
-  try {
-    targetUrl = decodeURIComponent(rawUrl);
-    new URL(targetUrl);
-  } catch(e) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'URL inválida' }));
-    return;
-  }
-
-  const allowed = ['s3.amazonaws.com', 'fieldcontrol.com.br'];
-  const hostname = new URL(targetUrl).hostname;
-  if (!allowed.some(d => hostname.endsWith(d))) {
-    res.writeHead(403, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Domínio não permitido: ' + hostname }));
-    return;
-  }
-
-  const lib = targetUrl.startsWith('https') ? https : http;
-  const request = lib.get(targetUrl, { timeout: 15000 }, (upstream) => {
-    const ct = upstream.headers['content-type'] || 'image/jpeg';
-    if (!ct.startsWith('image/')) {
-      res.writeHead(422, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'URL não retornou imagem: ' + ct }));
-      return;
+    const allowed = ['s3.amazonaws.com', 'fieldcontrol.com.br'];
+    const hostname = new URL(targetUrl).hostname;
+    if (!allowed.some(d => hostname.endsWith(d))) {
+      res.writeHead(403); res.end(JSON.stringify({ error: 'Domínio não permitido' })); return;
     }
-    res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600' });
-    upstream.pipe(res);
-  });
 
-  request.on('error', (e) => {
-    res.writeHead(502, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Erro ao buscar imagem: ' + e.message }));
-  });
+    try {
+      const { status, headers, body } = await fetchUrl(targetUrl);
+      const ct = headers['content-type'] || 'image/jpeg';
+      if (!ct.startsWith('image/')) { res.writeHead(422); res.end(JSON.stringify({ error: 'Não é imagem' })); return; }
+      res.writeHead(status, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600' });
+      res.end(body);
+    } catch(e) {
+      res.writeHead(502); res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
 
-  request.on('timeout', () => {
-    request.destroy();
-    res.writeHead(504, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Timeout ao buscar imagem' }));
-  });
+  // Analisa imagem: POST /analyze { imageUrl }
+  if (req.method === 'POST' && req.url === '/analyze') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { imageUrl, placaDigitada, cobliDigitado } = JSON.parse(body);
+        if (!imageUrl) throw new Error('imageUrl obrigatório');
+
+        // Baixa a imagem
+        const { status, headers, body: imgBuf } = await fetchUrl(imageUrl, 20000);
+        if (status !== 200) throw new Error('Erro ao baixar imagem: HTTP ' + status);
+        const mime = headers['content-type'] || 'image/jpeg';
+        const b64 = imgBuf.toString('base64');
+
+        // Chama a API da Anthropic
+        const prompt = `Analise esta foto de veículo. Extraia:
+1. Placa do veículo brasileiro (ex: ABC1234 ou ABC1D23), sem espaços.
+2. Número Cobli visível em etiqueta/adesivo próximo ao QR code. Pode aparecer como "N. Cobli: XXXX". Retorne apenas os caracteres (ex: W65T).
+Se não identificar algum, retorne null. Responda SOMENTE JSON puro sem markdown:
+{"placa":"XXXXXXX","cobli":"XXXX"}`;
+
+        const aiRes = await postJson('https://api.anthropic.com/v1/messages', {
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } },
+            { type: 'text', text: prompt }
+          ]}]
+        });
+
+        const aiData = JSON.parse(aiRes.body);
+        if (aiData.error) throw new Error(aiData.error.message);
+        const txt = (aiData.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
+        const parsed = JSON.parse(txt);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ placa: parsed.placa || null, cobli: parsed.cobli || null }));
+      } catch(e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  res.writeHead(404); res.end('Not found');
 });
 
 server.listen(PORT, () => console.log('Servidor rodando na porta ' + PORT));
