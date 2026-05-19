@@ -280,14 +280,47 @@ function buildSheetPills(sheets,fname){
   loadSheet(sheets[0],fname);
 }
 
-function loadSheet(sheetName,fname){
-  const ws=workbook.Sheets[sheetName];
-  const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-  const nonEmpty=data.filter(r=>r.some(c=>String(c).trim()));
-  if(nonEmpty.length<2){ showErr('fileErr','Aba "'+sheetName+'" vazia.'); return; }
-  headers=nonEmpty[0].map(h=>String(h).trim());
-  csvRows=nonEmpty.slice(1).filter(r=>r.some(c=>String(c).trim()));
-  finishLoad(fname+(workbook.SheetNames.length>1?' · '+sheetName:''));
+function loadSheet(sheetName, fname) {
+  const ws = workbook.Sheets[sheetName];
+  if (!ws['!ref']) { showErr('fileErr', 'Aba vazia.'); return; }
+  
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const data = [];
+  
+  // Vamos ler célula por célula procurando por hiperlinks escondidos
+  for (let R = range.s.r; R <= range.e.r; ++R) {
+    const row = [];
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const cell = ws[XLSX.utils.encode_cell({r: R, c: C})];
+      let val = '';
+      
+      if (cell) {
+        // Se a célula tiver um hiperlink real embutido, pega o link da URL
+        if (cell.l && cell.l.Target) {
+          val = cell.l.Target;
+        } 
+        // Se o link foi feito usando a fórmula =HYPERLINK("url", "texto")
+        else if (cell.f && cell.f.toUpperCase().includes('HYPERLINK')) {
+          const match = cell.f.match(/"(https?:\/\/[^"]+)"/);
+          val = match ? match[1] : (cell.v || cell.w || '');
+        } 
+        // Se for só texto normal
+        else {
+          val = cell.v || cell.w || '';
+        }
+      }
+      row.push(val);
+    }
+    data.push(row);
+  }
+  
+  const nonEmpty = data.filter(r => r.some(c => String(c).trim()));
+  if (nonEmpty.length < 2) { showErr('fileErr', 'Aba "' + sheetName + '" vazia.'); return; }
+  
+  headers = nonEmpty[0].map(h => String(h).trim());
+  csvRows = nonEmpty.slice(1).filter(r => r.some(c => String(c).trim()));
+  
+  finishLoad(fname + (workbook.SheetNames.length > 1 ? ' · ' + sheetName : ''));
 }
 
 function parseCSVText(text,fname){
