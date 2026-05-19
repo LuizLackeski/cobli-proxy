@@ -201,44 +201,20 @@
 const PROXY = 'https://cobli-proxy.onrender.com'; // usa o próprio servidor
 let workbook=null, csvRows=[], headers=[], results=[], currentFilter='todos', stopped=false;
 
-async function fetchImageAsBase64(url) {
-  const proxyUrl = PROXY + '/proxy?url=' + encodeURIComponent(url);
-  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(25000) });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'HTTP ' + res.status }));
-    throw new Error(err.error || 'HTTP ' + res.status);
-  }
-  const blob = await res.blob();
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = e => resolve({ b64: e.target.result.split(',')[1], mime: blob.type || 'image/jpeg' });
-    r.onerror = reject;
-    r.readAsDataURL(blob);
-  });
-}
-
-async function analyzeImage(b64, mime) {
-  const prompt = `Analise esta foto de veículo. Extraia:
-1. Placa do veículo brasileiro (ex: ABC1234 ou ABC1D23), sem espaços.
-2. Número Cobli visível em etiqueta/adesivo próximo ao QR code. Pode aparecer como "N. Cobli: XXXX". Retorne apenas os caracteres do número (ex: W65T).
-Se não identificar algum, retorne null. Responda SOMENTE JSON puro sem markdown:
-{"placa":"XXXXXXX","cobli":"XXXX"}`;
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+async function analyzeImageViaServer(url) {
+  // Manda o link da foto direto para o seu servidor no Render
+  const res = await fetch(PROXY + '/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514', max_tokens: 1000,
-      messages: [{ role: 'user', content: [
-        { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } },
-        { type: 'text', text: prompt }
-      ]}]
-    })
+    body: JSON.stringify({ imageUrl: url })
   });
-  if (!res.ok) throw new Error('API error ' + res.status);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  const txt = (data.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
-  return JSON.parse(txt);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Erro interno no servidor: ' + res.status);
+  }
+  
+  return await res.json();
 }
 
 async function testarLink() {
@@ -246,13 +222,14 @@ async function testarLink() {
   if (iFoto === '') { setTest('⚠ Selecione a coluna de foto primeiro.'); return; }
   const url = String(csvRows[0]?.[iFoto] || '').trim();
   if (!url) { setTest('⚠ Nenhum link na primeira linha.'); return; }
-  setTest('⏳ Baixando via proxy...');
+  
+  setTest('⏳ Enviando para o servidor analisar...');
   try {
-    const { b64, mime } = await fetchImageAsBase64(url);
-    setTest('⏳ Imagem OK — enviando para IA...');
-    const parsed = await analyzeImage(b64, mime);
+    const parsed = await analyzeImageViaServer(url);
     setTest(`✅ Funcionou! Placa: "${parsed.placa||'não detectada'}" · Cobli: "${parsed.cobli||'não detectado'}"`);
-  } catch(e) { setTest('❌ ' + e.message); }
+  } catch(e) { 
+    setTest('❌ ' + e.message); 
+  }
 }
 function setTest(msg) { document.getElementById('testResult').textContent = msg; }
 
