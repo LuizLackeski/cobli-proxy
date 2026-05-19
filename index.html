@@ -374,14 +374,19 @@ async function startBatch(){
     document.getElementById('pText').textContent='Processando '+(i+1)+' de '+total+(fotoUrl?' — '+fotoUrl.slice(0,60):'');
 
     let aiPlaca='',aiCobli='',imgError='';
+let aiPlaca='', aiCobli='', imgError='';
     if(fotoUrl){
-      try{
-        const {b64,mime}=await fetchImageAsBase64(fotoUrl);
-        const parsed=await analyzeImage(b64,mime);
-        aiPlaca=parsed.placa||'';
-        aiCobli=parsed.cobli||'';
-      }catch(e){ imgError=e.message; }
-    } else { imgError='Sem link'; }
+      try {
+        // Agora você chama apenas o seu servidor e ele faz o trabalho pesado
+        const parsed = await analyzeImageViaServer(fotoUrl);
+        aiPlaca = parsed.placa || '';
+        aiCobli = parsed.cobli || '';
+      } catch(e) { 
+        imgError = e.message; 
+      }
+    } else { 
+      imgError = 'Sem link'; 
+    }
 
     const pStatus=matchStatus(aiPlaca,placaD);
     const cStatus=matchStatus(aiCobli,cobliD);
