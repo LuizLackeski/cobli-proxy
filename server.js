@@ -92,7 +92,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Analisa imagem: POST /analyze { imageUrl }
+// Analisa imagem: POST /analyze { imageUrl }
   if (req.method === 'POST' && req.url === '/analyze') {
     let body = '';
     req.on('data', c => body += c);
@@ -100,12 +100,19 @@ const server = http.createServer(async (req, res) => {
       try {
         const { imageUrl } = JSON.parse(body);
         if (!imageUrl) throw new Error('imageUrl obrigatório');
-        if (!GEMINI_KEY) throw new Error('Chave API do Gemini não configurada no servidor.');
+        
+        // Garante que a chave não tem espaços em branco
+        const cleanKey = GEMINI_KEY.trim(); 
+        if (!cleanKey) throw new Error('Chave API do Gemini não configurada.');
 
         // 1. Baixa a imagem
         const { status, headers, body: imgBuf } = await fetchUrl(imageUrl, 20000);
         if (status !== 200) throw new Error('Erro ao baixar imagem: HTTP ' + status);
-        const mime = headers['content-type'] || 'image/jpeg';
+        
+        // Força um MIME type válido se o servidor original não mandar
+        let mime = headers['content-type'] || 'image/jpeg';
+        if (!mime.startsWith('image/')) mime = 'image/jpeg'; 
+        
         const b64 = imgBuf.toString('base64');
 
         // 2. Prepara o prompt
@@ -116,8 +123,8 @@ Se não identificar algum, retorne null.
 Responda APENAS usando a estrutura JSON abaixo:
 {"placa":"XXXXXXX","cobli":"XXXX"}`;
 
-// 3. Monta o payload no formato exigido pelo Gemini (Versão Estável V1)
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+        // 3. Usa a v1beta com o modelo flash exato
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
         
         const payload = {
           contents: [{
@@ -128,20 +135,32 @@ Responda APENAS usando a estrutura JSON abaixo:
           }]
         };
 
-        // 4. Faz a requisição
-        const aiRes = await postJson(geminiUrl, payload);
-        const aiData = JSON.parse(aiRes.body);
+        // 4. Faz a requisição usando o fetch nativo do Node (muito mais à prova de falhas)
+        const geminiRes = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
 
-        if (aiData.error) throw new Error(aiData.error.message);
+        const aiData = await geminiRes.json();
 
-        // 5. O Gemini retorna o texto dentro de candidates[0].content.parts[0].text
+        if (!geminiRes.ok) {
+           throw new Error(aiData.error?.message || 'Erro desconhecido na API do Gemini');
+        }
+
+        // 5. Extrai a resposta
         const txt = aiData.candidates[0].content.parts[0].text.trim();
-        const parsed = JSON.parse(txt);
+        
+        // Tenta limpar caso a IA mande ```json antes do texto
+        const cleanTxt = txt.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(cleanTxt);
 
         // 6. Devolve pro Front-end
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ placa: parsed.placa || null, cobli: parsed.cobli || null }));
+        
       } catch(e) {
+        console.error("Erro no /analyze:", e.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
       }
