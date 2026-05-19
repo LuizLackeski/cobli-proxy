@@ -116,17 +116,16 @@ Se não identificar algum, retorne null.
 Responda APENAS usando a estrutura JSON abaixo:
 {"placa":"XXXXXXX","cobli":"XXXX"}`;
 
-        // 3. Monta o payload no formato exigido pelo Gemini
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${GEMINI_KEY}`;
+// 3. Monta o payload no formato exigido pelo Gemini (Versão Estável V1)
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+        
         const payload = {
           contents: [{
             parts: [
               { text: prompt },
               { inlineData: { mimeType: mime, data: b64 } }
             ]
-          }],
-          // Força a IA a retornar o texto estritamente em formato JSON
-          generationConfig: { responseMimeType: "application/json" }
+          }]
         };
 
         // 4. Faz a requisição
