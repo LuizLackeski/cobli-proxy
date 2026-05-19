@@ -1,15 +1,27 @@
 const https = require('https');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.env.PORT || 3000;
 
 const server = http.createServer((req, res) => {
-  // CORS liberado para qualquer origem
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  // Serve o app HTML na raiz
+  if (req.url === '/' || req.url === '/index.html') {
+    const filePath = path.join(__dirname, 'index.html');
+    fs.readFile(filePath, (err, data) => {
+      if (err) { res.writeHead(404); res.end('Not found'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(data);
+    });
+    return;
+  }
 
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -27,14 +39,13 @@ const server = http.createServer((req, res) => {
   let targetUrl;
   try {
     targetUrl = decodeURIComponent(rawUrl);
-    new URL(targetUrl); // valida
+    new URL(targetUrl);
   } catch(e) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'URL inválida' }));
     return;
   }
 
-  // Só permite S3 da Fieldcontrol
   const allowed = ['s3.amazonaws.com', 'fieldcontrol.com.br'];
   const hostname = new URL(targetUrl).hostname;
   if (!allowed.some(d => hostname.endsWith(d))) {
@@ -67,4 +78,4 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => console.log('Proxy rodando na porta ' + PORT));
+server.listen(PORT, () => console.log('Servidor rodando na porta ' + PORT));
