@@ -117,7 +117,7 @@ Responda APENAS usando a estrutura JSON abaixo:
 {"placa":"XXXXXXX","cobli":"XXXX"}`;
 
         // 3. Monta o payload no formato exigido pelo Gemini
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${GEMINI_KEY}`;
         const payload = {
           contents: [{
             parts: [
