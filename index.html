@@ -85,7 +85,6 @@
 
 <div class="main">
 
-  <!-- STEP 1 -->
   <div class="card" id="s1">
     <div class="card-header">
       <div class="step-num active">1</div>
@@ -100,7 +99,6 @@
     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="loadFile(this.files[0])">
   </div>
 
-  <!-- STEP 2 -->
   <div class="card" id="s2" style="display:none">
     <div class="card-header">
       <div class="step-num" id="n2">2</div>
@@ -144,7 +142,6 @@
     </div>
   </div>
 
-  <!-- STEP 3 -->
   <div class="card" id="s3" style="display:none">
     <div class="card-header">
       <div class="step-num" id="n3">3</div>
@@ -157,7 +154,6 @@
     </div>
   </div>
 
-  <!-- STEP 4 -->
   <div id="s4" style="display:none">
     <div class="summary-grid">
       <div class="metric"><div class="metric-val" id="mTotal">0</div><div class="metric-lbl">Total</div></div>
@@ -200,21 +196,30 @@
 <script>
 const PROXY = 'https://cobli-proxy.onrender.com'; // usa o próprio servidor
 let workbook=null, csvRows=[], headers=[], results=[], currentFilter='todos', stopped=false;
+const delay = ms => new Promise(res => setTimeout(res, ms));
 
-async function analyzeImageViaServer(url) {
-  // Manda o link da foto direto para o seu servidor no Render
-  const res = await fetch(PROXY + '/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageUrl: url })
-  });
+async function analyzeImageViaServer(url, tentativas = 3) {
+  for (let i = 1; i <= tentativas; i++) {
+    const res = await fetch(PROXY + '/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl: url })
+    });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Erro interno no servidor: ' + res.status);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const msg = err.error || 'Erro interno: ' + res.status;
+      
+      // Se for erro de cota ou servidor lotado, espera e tenta de novo
+      if ((res.status === 429 || res.status === 500 || res.status === 503 || msg.includes('demand') || msg.includes('Quota')) && i < tentativas) {
+        document.getElementById('pText').textContent = `Google lotado. Retentando (${i}/${tentativas})...`;
+        await delay(6000); // Espera 6 segundos
+        continue;
+      }
+      throw new Error(msg);
+    }
+    return await res.json();
   }
-  
-  return await res.json();
 }
 
 async function testarLink() {
@@ -397,6 +402,12 @@ async function startBatch(){
   const total=csvRows.length;
   for(let i=0;i<total;i++){
     if(stopped) break;
+
+    // FREIO DE MÃO: Espera 3.5 segundos entre cada foto para não estourar os 20 por minuto do Google
+    if (i > 0) {
+       await delay(3500); 
+    }
+
     const row=csvRows[i];
     const chamado=iChamado!==''?(String(row[iChamado]||'').trim()||'—'):'—';
     const placaD=String(row[iPlaca]||'').trim();
