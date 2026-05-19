@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
+// Agora puxamos a chave do Gemini
+const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 
 function fetchUrl(url, timeout = 15000) {
   return new Promise((resolve, reject) => {
@@ -19,6 +20,7 @@ function fetchUrl(url, timeout = 15000) {
   });
 }
 
+// Função post ajustada (O Gemini manda a chave direto na URL, então não precisa de headers customizados)
 function postJson(url, payload) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(payload);
@@ -26,9 +28,7 @@ function postJson(url, payload) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data),
-        'x-api-key': ANTHROPIC_KEY,
-        'anthropic-version': '2023-06-01'
+        'Content-Length': Buffer.byteLength(data)
       }
     };
     const req = https.request(url, opts, (res) => {
@@ -98,36 +98,48 @@ const server = http.createServer(async (req, res) => {
     req.on('data', c => body += c);
     req.on('end', async () => {
       try {
-        const { imageUrl, placaDigitada, cobliDigitado } = JSON.parse(body);
+        const { imageUrl } = JSON.parse(body);
         if (!imageUrl) throw new Error('imageUrl obrigatório');
+        if (!GEMINI_KEY) throw new Error('Chave API do Gemini não configurada no servidor.');
 
-        // Baixa a imagem
+        // 1. Baixa a imagem
         const { status, headers, body: imgBuf } = await fetchUrl(imageUrl, 20000);
         if (status !== 200) throw new Error('Erro ao baixar imagem: HTTP ' + status);
         const mime = headers['content-type'] || 'image/jpeg';
         const b64 = imgBuf.toString('base64');
 
-        // Chama a API da Anthropic
+        // 2. Prepara o prompt
         const prompt = `Analise esta foto de veículo. Extraia:
 1. Placa do veículo brasileiro (ex: ABC1234 ou ABC1D23), sem espaços.
 2. Número Cobli visível em etiqueta/adesivo próximo ao QR code. Pode aparecer como "N. Cobli: XXXX". Retorne apenas os caracteres (ex: W65T).
-Se não identificar algum, retorne null. Responda SOMENTE JSON puro sem markdown:
+Se não identificar algum, retorne null.
+Responda APENAS usando a estrutura JSON abaixo:
 {"placa":"XXXXXXX","cobli":"XXXX"}`;
 
-        const aiRes = await postJson('https://api.anthropic.com/v1/messages', {
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{ role: 'user', content: [
-            { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } },
-            { type: 'text', text: prompt }
-          ]}]
-        });
+        // 3. Monta o payload no formato exigido pelo Gemini
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+        const payload = {
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType: mime, data: b64 } }
+            ]
+          }],
+          // Força a IA a retornar o texto estritamente em formato JSON
+          generationConfig: { responseMimeType: "application/json" }
+        };
 
+        // 4. Faz a requisição
+        const aiRes = await postJson(geminiUrl, payload);
         const aiData = JSON.parse(aiRes.body);
+
         if (aiData.error) throw new Error(aiData.error.message);
-        const txt = (aiData.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();
+
+        // 5. O Gemini retorna o texto dentro de candidates[0].content.parts[0].text
+        const txt = aiData.candidates[0].content.parts[0].text.trim();
         const parsed = JSON.parse(txt);
 
+        // 6. Devolve pro Front-end
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ placa: parsed.placa || null, cobli: parsed.cobli || null }));
       } catch(e) {
